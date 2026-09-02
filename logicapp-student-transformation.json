@@ -1,0 +1,442 @@
+{
+    "definition": {
+        "metadata": {
+            "notes": {}
+        },
+        "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+        "contentVersion": "1.0.0.0",
+        "triggers": {
+            "When_an_HTTP_request_is_received": {
+                "type": "Request",
+                "kind": "Http",
+                "inputs": {
+                    "method": "GET"
+                }
+            }
+        },
+        "actions": {
+            "Get_blob_content": {
+                "type": "ApiConnection",
+                "inputs": {
+                    "host": {
+                        "connection": {
+                            "name": "@parameters('$connections')['azureblob']['connectionId']"
+                        }
+                    },
+                    "method": "get",
+                    "path": "/v2/datasets/@{encodeURIComponent(encodeURIComponent('AccountNameFromSettings'))}/files/@{encodeURIComponent(encodeURIComponent('JTJmaW5wdXQtZGF0YSUyZnNhbXBsZS1pbnB1dC5qc29u'))}/content"
+                },
+                "runAfter": {},
+                "metadata": {
+                    "JTJmaW5wdXQtZGF0YSUyZnNhbXBsZS1pbnB1dC5qc29u": "/input-data/sample-input.json"
+                }
+            },
+            "Parse_JSON": {
+                "type": "ParseJson",
+                "inputs": {
+                    "content": "@json(body('Get_blob_content'))",
+                    "schema": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "student_id": {
+                                    "type": "string"
+                                },
+                                "forename": {
+                                    "type": "string"
+                                },
+                                "surname": {
+                                    "type": "string"
+                                },
+                                "course": {
+                                    "type": "string"
+                                },
+                                "email_address": {
+                                    "type": "string"
+                                }
+                            },
+                            "required": []
+                        }
+                    }
+                },
+                "runAfter": {
+                    "Get_blob_content": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "For_each_student": {
+                "type": "Foreach",
+                "foreach": "@body('Parse_JSON')",
+                "actions": {
+                    "Condition_Check_Duplicate_InMemory": {
+                        "type": "If",
+                        "expression": {
+                            "and": [
+                                {
+                                    "greater": [
+                                        "@length(body('Filter_Check_If_ID_Exists'))",
+                                        0
+                                    ]
+                                }
+                            ]
+                        },
+                        "actions": {
+                            "Compose_duplicate_error": {
+                                "type": "Compose",
+                                "inputs": {
+                                    "student_id": "@{items('For_each_student')?['student_id']}",
+                                    "forename": "@{coalesce(items('For_each_student')?['forename'], 'MISSING')}",
+                                    "surname": "@{coalesce(items('For_each_student')?['surname'], 'MISSING')}",
+                                    "course": "@{coalesce(items('For_each_student')?['course'], 'MISSING')}",
+                                    "email_address": "@{coalesce(items('For_each_student')?['email_address'], 'MISSING')}",
+                                    "reason": "Duplicate student_id detected",
+                                    "timestamp": "@{utcNow()}"
+                                }
+                            },
+                            "Append_duplicate_to_errorRecords": {
+                                "type": "AppendToArrayVariable",
+                                "inputs": {
+                                    "name": "errorRecords",
+                                    "value": "@outputs('Compose_duplicate_error')"
+                                },
+                                "runAfter": {
+                                    "Compose_duplicate_error": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            }
+                        },
+                        "else": {
+                            "actions": {
+                                "Condition_Validate_All_Fields": {
+                                    "type": "If",
+                                    "expression": {
+                                        "and": [
+                                            {
+                                                "not": {
+                                                    "equals": [
+                                                        "@coalesce(items('For_each_student')?['student_id'], '')",
+                                                        ""
+                                                    ]
+                                                }
+                                            },
+                                            {
+                                                "not": {
+                                                    "equals": [
+                                                        "@coalesce(items('For_each_student')?['forename'], '')",
+                                                        ""
+                                                    ]
+                                                }
+                                            },
+                                            {
+                                                "not": {
+                                                    "equals": [
+                                                        "@coalesce(items('For_each_student')?['surname'], '')",
+                                                        ""
+                                                    ]
+                                                }
+                                            },
+                                            {
+                                                "not": {
+                                                    "equals": [
+                                                        "@coalesce(items('For_each_student')?['email_address'], '')",
+                                                        ""
+                                                    ]
+                                                }
+                                            },
+                                            {
+                                                "contains": [
+                                                    "@variables('courseMapping')",
+                                                    "@items('For_each_student')?['course']"
+                                                ]
+                                            }
+                                        ]
+                                    },
+                                    "actions": {
+                                        "Condition_Validate_Email_Format": {
+                                            "type": "If",
+                                            "expression": {
+                                                "and": [
+                                                    {
+                                                        "greaterOrEquals": [
+                                                            "@length(split(items('For_each_student')?['email_address'], '@'))",
+                                                            2
+                                                        ]
+                                                    },
+                                                    {
+                                                        "contains": [
+                                                            "@items('For_each_student')?['email_address']",
+                                                            "."
+                                                        ]
+                                                    }
+                                                ]
+                                            },
+                                            "actions": {
+                                                "Compose_transformed_record": {
+                                                    "type": "Compose",
+                                                    "inputs": {
+                                                        "studentNumber": "@{items('For_each_student')?['student_id']}",
+                                                        "fullName": "@{concat(items('For_each_student')?['forename'], ' ', items('For_each_student')?['surname'])}",
+                                                        "courseCode": "@{variables('courseMapping')[items('For_each_student')?['course']]}",
+                                                        "email": "@{items('For_each_student')?['email_address']}",
+                                                        "status": "Active"
+                                                    }
+                                                },
+                                                "Append_student_ID_to_processed": {
+                                                    "type": "AppendToArrayVariable",
+                                                    "inputs": {
+                                                        "name": "processedIDs",
+                                                        "value": "@items('For_each_student')?['student_id']"
+                                                    },
+                                                    "runAfter": {
+                                                        "Compose_transformed_record": [
+                                                            "Succeeded"
+                                                        ]
+                                                    }
+                                                },
+                                                "Append_to_successRecords": {
+                                                    "type": "AppendToArrayVariable",
+                                                    "inputs": {
+                                                        "name": "successRecords",
+                                                        "value": "@outputs('Compose_transformed_record')"
+                                                    },
+                                                    "runAfter": {
+                                                        "Send_message": [
+                                                            "Succeeded"
+                                                        ]
+                                                    }
+                                                },
+                                                "Send_message": {
+                                                    "type": "ApiConnection",
+                                                    "inputs": {
+                                                        "host": {
+                                                            "connection": {
+                                                                "name": "@parameters('$connections')['servicebus']['connectionId']"
+                                                            }
+                                                        },
+                                                        "method": "post",
+                                                        "body": {
+                                                            "ContentData": "@base64(outputs('Compose_transformed_record'))"
+                                                        },
+                                                        "path": "/@{encodeURIComponent(encodeURIComponent('student-enrolment-queue'))}/messages",
+                                                        "queries": {
+                                                            "systemProperties": "None"
+                                                        }
+                                                    },
+                                                    "runAfter": {
+                                                        "Append_student_ID_to_processed": [
+                                                            "Succeeded"
+                                                        ]
+                                                    }
+                                                }
+                                            },
+                                            "else": {
+                                                "actions": {
+                                                    "Compose_invalid_email_error": {
+                                                        "type": "Compose",
+                                                        "inputs": {
+                                                            "student_id": "@{items('For_each_student')?['student_id']}",
+                                                            "forename": "@{items('For_each_student')?['forename']}",
+                                                            "surname": "@{items('For_each_student')?['surname']}",
+                                                            "course": "@{items('For_each_student')?['course']}",
+                                                            "email_address": "@{items('For_each_student')?['email_address']}",
+                                                            "reason": "Invalid email format",
+                                                            "timestamp": "@{utcNow()}"
+                                                        }
+                                                    },
+                                                    "Append_invalid_email_to_errorRecords": {
+                                                        "type": "AppendToArrayVariable",
+                                                        "inputs": {
+                                                            "name": "errorRecords",
+                                                            "value": "@outputs('Compose_invalid_email_error')"
+                                                        },
+                                                        "runAfter": {
+                                                            "Compose_invalid_email_error": [
+                                                                "Succeeded"
+                                                            ]
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    },
+                                    "else": {
+                                        "actions": {
+                                            "Compose_validation_error": {
+                                                "type": "Compose",
+                                                "inputs": {
+                                                    "student_id": "@{coalesce(items('For_each_student')?['student_id'], 'MISSING')}",
+                                                    "forename": "@{coalesce(items('For_each_student')?['forename'], 'MISSING')}",
+                                                    "surname": "@{coalesce(items('For_each_student')?['surname'], 'MISSING')}",
+                                                    "course": "@{coalesce(items('For_each_student')?['course'], 'MISSING')}",
+                                                    "email_address": "@{coalesce(items('For_each_student')?['email_address'], 'MISSING')}",
+                                                    "reason": "@{if(equals(coalesce(items('For_each_student')?['student_id'], ''), ''), 'Missing student_id', if(equals(coalesce(items('For_each_student')?['forename'], ''), ''), 'Missing forename', if(equals(coalesce(items('For_each_student')?['surname'], ''), ''), 'Missing surname', if(equals(coalesce(items('For_each_student')?['email_address'], ''), ''), 'Missing or empty email_address', if(not(contains(variables('courseMapping'), items('For_each_student')?['course'])), concat('Unknown course mapping: ', items('For_each_student')?['course']), 'Validation failed')))))}",
+                                                    "timestamp": "@{utcNow()}"
+                                                }
+                                            },
+                                            "Append_validation_error_to_errorRecords": {
+                                                "type": "AppendToArrayVariable",
+                                                "inputs": {
+                                                    "name": "errorRecords",
+                                                    "value": "@outputs('Compose_validation_error')"
+                                                },
+                                                "runAfter": {
+                                                    "Compose_validation_error": [
+                                                        "Succeeded"
+                                                    ]
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "runAfter": {
+                            "Filter_Check_If_ID_Exists": [
+                                "Succeeded"
+                            ]
+                        }
+                    },
+                    "Filter_Check_If_ID_Exists": {
+                        "type": "Query",
+                        "inputs": {
+                            "from": "@variables('processedIDs')",
+                            "where": "@equals(item(), items('For_each_student')?['student_id'])"
+                        }
+                    }
+                },
+                "runAfter": {
+                    "Initialize_processedIDs": [
+                        "Succeeded"
+                    ]
+                },
+                "operationOptions": "Sequential"
+            },
+            "Condition_Check_if_errors_exist": {
+                "type": "If",
+                "expression": {
+                    "and": [
+                        {
+                            "greater": [
+                                "@length(variables('errorRecords'))",
+                                0
+                            ]
+                        }
+                    ]
+                },
+                "actions": {
+                    "Create_exception_report_blob": {
+                        "type": "ApiConnection",
+                        "inputs": {
+                            "host": {
+                                "connection": {
+                                    "name": "@parameters('$connections')['azureblob']['connectionId']"
+                                }
+                            },
+                            "method": "post",
+                            "body": "@variables('errorRecords')",
+                            "path": "/v2/datasets/@{encodeURIComponent(encodeURIComponent('AccountNameFromSettings'))}/files",
+                            "queries": {
+                                "folderPath": "/exception-reports",
+                                "name": "exceptions-@{formatDateTime(utcNow(), 'yyyy-MM-dd-HHmmss')}.json",
+                                "queryParametersSingleEncoded": true
+                            }
+                        }
+                    }
+                },
+                "else": {
+                    "actions": {}
+                },
+                "runAfter": {
+                    "For_each_student": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Response": {
+                "type": "Response",
+                "kind": "Http",
+                "inputs": {
+                    "statusCode": 200,
+                    "body": {
+                        "totalRecords": "@{length(body('Parse_JSON'))}",
+                        "successfulRecords": "@{length(variables('successRecords'))}",
+                        "failedRecords": "@{length(variables('errorRecords'))}",
+                        "processingTimestamp": "@{utcNow()}",
+                        "processedIDs": "@{variables('processedIDs')}",
+                        "message": "Processing complete. Check Service Bus for successful records and exception report for failures."
+                    }
+                },
+                "runAfter": {
+                    "Condition_Check_if_errors_exist": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Initialize_processedIDs": {
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "successRecords",
+                            "type": "array",
+                            "value": []
+                        },
+                        {
+                            "name": "errorRecords",
+                            "type": "array",
+                            "value": []
+                        },
+                        {
+                            "name": "courseMapping",
+                            "type": "object",
+                            "value": {
+                                "BSc Computer Science": "BCS",
+                                "BSc Business Studies": "BBS",
+                                "BSc Psychology": "BPS"
+                            }
+                        },
+                        {
+                            "name": "processedIDs",
+                            "type": "array",
+                            "value": []
+                        }
+                    ]
+                },
+                "runAfter": {
+                    "Parse_JSON": [
+                        "Succeeded"
+                    ]
+                }
+            }
+        },
+        "outputs": {},
+        "parameters": {
+            "$connections": {
+                "type": "Object",
+                "defaultValue": {}
+            }
+        }
+    },
+    "parameters": {
+        "$connections": {
+            "type": "Object",
+            "value": {
+                "azureblob": {
+                    "id": "/subscriptions/ba463235-b479-4130-b3a5-fb2d44f39810/providers/Microsoft.Web/locations/uksouth/managedApis/azureblob",
+                    "connectionId": "/subscriptions/ba463235-b479-4130-b3a5-fb2d44f39810/resourceGroups/rg-integration-assessment/providers/Microsoft.Web/connections/azureblob",
+                    "connectionName": "azureblob",
+                    "connectionProperties": {}
+                },
+                "servicebus": {
+                    "id": "/subscriptions/ba463235-b479-4130-b3a5-fb2d44f39810/providers/Microsoft.Web/locations/uksouth/managedApis/servicebus",
+                    "connectionId": "/subscriptions/ba463235-b479-4130-b3a5-fb2d44f39810/resourceGroups/rg-integration-assessment/providers/Microsoft.Web/connections/servicebus",
+                    "connectionName": "servicebus",
+                    "connectionProperties": {}
+                }
+            }
+        }
+    }
+}

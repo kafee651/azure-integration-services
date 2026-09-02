@@ -1,0 +1,216 @@
+{
+    "definition": {
+        "metadata": {
+            "notes": {}
+        },
+        "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+        "contentVersion": "1.0.0.0",
+        "triggers": {
+            "When_a_message_is_received_in_a_queue_(auto-complete)": {
+                "type": "ApiConnection",
+                "inputs": {
+                    "host": {
+                        "connection": {
+                            "name": "@parameters('$connections')['servicebus']['connectionId']"
+                        }
+                    },
+                    "method": "get",
+                    "path": "/@{encodeURIComponent(encodeURIComponent('student-enrolment-queue'))}/messages/head",
+                    "queries": {
+                        "queueType": "Main"
+                    }
+                },
+                "recurrence": {
+                    "interval": 3,
+                    "frequency": "Second"
+                }
+            }
+        },
+        "actions": {
+            "Parse_Service_Bus_Message": {
+                "type": "ParseJson",
+                "inputs": {
+                    "content": "@json(base64ToString(triggerBody()?['ContentData']))",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "studentNumber": {
+                                "type": "string"
+                            },
+                            "fullName": {
+                                "type": "string"
+                            },
+                            "courseCode": {
+                                "type": "string"
+                            },
+                            "email": {
+                                "type": "string"
+                            },
+                            "status": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                },
+                "runAfter": {}
+            },
+            "Get_blob_content_using_path_(V2)": {
+                "type": "ApiConnection",
+                "inputs": {
+                    "host": {
+                        "connection": {
+                            "name": "@parameters('$connections')['azureblob']['connectionId']"
+                        }
+                    },
+                    "method": "get",
+                    "path": "/v2/datasets/@{encodeURIComponent(encodeURIComponent('AccountNameFromSettings'))}/GetFileContentByPath",
+                    "queries": {
+                        "path": "/successful-records/successful-students-@{formatDateTime(utcNow(), 'yyyy-MM-dd')}.json",
+                        "inferContentType": true
+                    }
+                },
+                "runAfter": {
+                    "Parse_Service_Bus_Message": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Condition_Check_if_blob_exists": {
+                "type": "If",
+                "expression": {
+                    "and": [
+                        {
+                            "equals": [
+                                "@outputs('Get_blob_content_using_path_(V2)')['statusCode']",
+                                200
+                            ]
+                        }
+                    ]
+                },
+                "actions": {
+                    "Parse_existing_records": {
+                        "type": "ParseJson",
+                        "inputs": {
+                            "content": "@json(body('Get_blob_content_using_path_(V2)'))",
+                            "schema": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "studentNumber": {
+                                            "type": "string"
+                                        },
+                                        "fullName": {
+                                            "type": "string"
+                                        },
+                                        "courseCode": {
+                                            "type": "string"
+                                        },
+                                        "email": {
+                                            "type": "string"
+                                        },
+                                        "status": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "Append_new_record": {
+                        "type": "Compose",
+                        "inputs": "@union(body('Parse_existing_records'), createArray(body('Parse_Service_Bus_Message')))",
+                        "runAfter": {
+                            "Parse_existing_records": [
+                                "Succeeded"
+                            ]
+                        }
+                    },
+                    "Update_blob_(V2)": {
+                        "type": "ApiConnection",
+                        "inputs": {
+                            "host": {
+                                "connection": {
+                                    "name": "@parameters('$connections')['azureblob']['connectionId']"
+                                }
+                            },
+                            "method": "put",
+                            "body": "@outputs('Append_new_record')",
+                            "headers": {
+                                "ReadFileMetadataFromServer": true
+                            },
+                            "path": "/v2/datasets/@{encodeURIComponent(encodeURIComponent('AccountNameFromSettings'))}/files/@{encodeURIComponent(encodeURIComponent('/successful-records/successful-students-',formatDateTime(utcNow(), 'yyyy-MM-dd'),'.json'))}"
+                        },
+                        "runAfter": {
+                            "Append_new_record": [
+                                "Succeeded"
+                            ]
+                        }
+                    }
+                },
+                "else": {
+                    "actions": {
+                        "Create_blob_(V2)": {
+                            "type": "ApiConnection",
+                            "inputs": {
+                                "host": {
+                                    "connection": {
+                                        "name": "@parameters('$connections')['azureblob']['connectionId']"
+                                    }
+                                },
+                                "method": "post",
+                                "body": "@createArray(body('Parse_Service_Bus_Message'))",
+                                "headers": {
+                                    "ReadFileMetadataFromServer": true
+                                },
+                                "path": "/v2/datasets/@{encodeURIComponent(encodeURIComponent('AccountNameFromSettings'))}/files",
+                                "queries": {
+                                    "folderPath": "/successful-records",
+                                    "name": "successful-students-@{formatDateTime(utcNow(), 'yyyy-MM-dd')}.json",
+                                    "queryParametersSingleEncoded": true
+                                }
+                            },
+                            "runtimeConfiguration": {
+                                "contentTransfer": {
+                                    "transferMode": "Chunked"
+                                }
+                            }
+                        }
+                    }
+                },
+                "runAfter": {
+                    "Get_blob_content_using_path_(V2)": [
+                        "Succeeded",
+                        "Failed"
+                    ]
+                }
+            }
+        },
+        "outputs": {},
+        "parameters": {
+            "$connections": {
+                "type": "Object",
+                "defaultValue": {}
+            }
+        }
+    },
+    "parameters": {
+        "$connections": {
+            "type": "Object",
+            "value": {
+                "servicebus": {
+                    "id": "/subscriptions/ba463235-b479-4130-b3a5-fb2d44f39810/providers/Microsoft.Web/locations/uksouth/managedApis/servicebus",
+                    "connectionId": "/subscriptions/ba463235-b479-4130-b3a5-fb2d44f39810/resourceGroups/rg-integration-assessment/providers/Microsoft.Web/connections/servicebus",
+                    "connectionName": "servicebus",
+                    "connectionProperties": {}
+                },
+                "azureblob": {
+                    "id": "/subscriptions/ba463235-b479-4130-b3a5-fb2d44f39810/providers/Microsoft.Web/locations/uksouth/managedApis/azureblob",
+                    "connectionId": "/subscriptions/ba463235-b479-4130-b3a5-fb2d44f39810/resourceGroups/rg-integration-assessment/providers/Microsoft.Web/connections/azureblob",
+                    "connectionName": "azureblob",
+                    "connectionProperties": {}
+                }
+            }
+        }
+    }
+}
